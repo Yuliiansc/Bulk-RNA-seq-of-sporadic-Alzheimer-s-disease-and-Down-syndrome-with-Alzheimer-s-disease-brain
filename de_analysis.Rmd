@@ -1,0 +1,101 @@
+
+```{r}
+pacman::p_load("here", "tidyverse", "DESeq2", "ggvenn", "EnhancedVolcano")
+here::i_am("README.md")
+
+meta <- read_csv(here("data", "DSAD-ApoE125_metadata.csv")) %>% 
+  column_to_rownames("...1")
+
+counts <- read_csv(here("data", "DSAD-ApoE125_readcounts_fixed_renamed.csv")) %>% 
+  column_to_rownames("...1")
+```
+Before creating the `DESeqDataSet`, run the lines that test if the dataset is prepped properly.
+
+```{r}
+unique(meta$tissue)
+unique(meta$disease)
+
+# checking if the meta fully corresponds to counts 
+all(rownames(meta) %in% colnames(counts))
+all(rownames(meta) == colnames(counts))
+```
+
+# Pariwise testing
+
+The idea is to test  whether there is difference in gene expression between Alzheimer's disease `alzh` and Alzheimer's disease combined with Down syndrome `down_alzh` regardless of the brain region.
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = counts, colData = meta,
+                              design = ~ factor)
+dds
+```
+
+```{r}
+dds <- DESeq(dds, test = "Wald")
+dds
+```
+
+```{r}
+res <- results(dds, contrast = c("factor", "pfc_AD", "pfc_DS_AD")) %>%
+  as.data.frame()
+res_sign <- res %>% filter(abs(log2FoldChange) > 1.5 & padj < 0.05)
+```
+
+```{r}
+res_sign_cereb <- results(dds, contrast = c("factor", "cereb_AD", "cereb_DS_AD")) %>%
+  as.data.frame() %>% filter(abs(log2FoldChange) > 1.5 & padj < 0.05)
+```
+
+```{r}
+write.csv(res, here("out", "DE_pfc_ADvsDS.csv"))
+write.csv(res_sign, here("out", "DE_pfc_ADvsDS_sign.csv"))
+```
+
+# Venn diagram
+
+```{r}
+cereb_up <- rownames(res_sign_cereb %>% filter(log2FoldChange > 1.5))
+cereb_down <- rownames(res_sign_cereb %>% filter(log2FoldChange < 1.5))
+pfc_up <- rownames(res_sign %>% filter(log2FoldChange > 1.5))
+pfc_down <- rownames(res_sign %>% filter(log2FoldChange < 1.5))
+```
+
+```{r}
+venn_list <- list("cereb\ndown" = cereb_down,
+                    "cereb up" = cereb_up,
+                    "PFC up" = pfc_up,
+                    "PFC\ndown" = pfc_down)
+```
+
+```{r}
+ggvenn(venn_list, text_size = 6, fill_color=c("#D04D1E", "#D04D1E", "#006D77", "#006D77"),
+       stroke_color = "white", stroke_size = 0, set_name_size = 6)
+```
+```{r}
+ggsave(last_plot(), filename = here("plots", "venn_cereb_VS_PFC.png"),
+       height = 10, width = 10)
+```
+
+
+# Volcano plot
+
+```{r}
+EnhancedVolcano(res,
+                lab = rownames(res),
+                x = "log2FoldChange",
+                y = "padj",
+                title = "Alzheimer Disease vs Down Syndrome + AD",
+                subtitle = 'Differential expression',
+                caption = 'FC > 1.5; p-value < 0.5; total: 17733 genes, of them 414 significant',
+                legendPosition = "right",
+                pCutoff = 0.05,
+                FCcutoff = 1.5,
+                xlim = c(-7.5, 10),
+                ylim = c(0, 20))
+```
+
+```{r}
+ggsave(last_plot(), filename = here("plots", "volcano_ADvsDS_AD.png"),
+       height = 10, width = 10)
+```
+

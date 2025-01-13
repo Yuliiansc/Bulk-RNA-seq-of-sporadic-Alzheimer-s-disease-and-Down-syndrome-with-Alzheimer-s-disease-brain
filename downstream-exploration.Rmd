@@ -1,0 +1,64 @@
+
+```{r}
+pacman::p_load("here", "tidyverse", "pathview")
+here::i_am("README.md")
+res_sign <- read.csv(here("out", "DE_pfc_ADvsDS_sign.csv"))
+AD_go_annot <- read.csv(here("data", "string_protein_annotations_AD_go.tsv"), sep = "\t")
+AD_kegg_annot <- read.csv(here("data", "string_protein_annotations_AD_kegg.tsv"), sep = "\t")
+DS_annot <- read.csv(here("data", "string_protein_annotations_DS.tsv"), sep = "\t")
+```
+
+```{r}
+AD_kegg_annot$X.node[AD_kegg_annot$X.node %in% res_sign$X]
+AD_go_annot$X.node[AD_go_annot$X.node %in% res_sign$X]
+DS_annot$X.node[DS_annot$X.node %in% res_sign$X]
+```
+# Visualize the intersections in a Venn diagram
+
+```{r}
+venn_list <- list("AD kegg" = AD_kegg_annot$X.node,
+                    "DS" = AD_go_annot$X.node,
+                    "DE genes" = res_sign$X)
+
+ggvenn::ggvenn(venn_list, text_size = 6, fill_color=c("#D04D1E", "#907F1E", "#006D77"),
+       stroke_color = "white", stroke_size = 0, set_name_size = 6)
+```
+```{r}
+ggsave(last_plot(), filename = here("plots", "venn_AD_DS_DE.png"),
+       height = 10, width = 10)
+```
+
+
+# pathview
+
+```{r}
+genedata <- res_sign %>% column_to_rownames("X") %>%
+  dplyr::select("log2FoldChange")
+```
+
+
+```{r}
+pv <- pathview(gene.data = genedata, pathway.id = "05010", species = "hsa",
+               gene.idtype = "SYMBOL")
+
+pv$plot.data.gene %>% filter(!is.na(log2FoldChange))
+```
+
+```{r}
+coldf <- pv$plot.data.gene %>% filter(!is.na(log2FoldChange)) %>%
+  dplyr::select(labels, log2FoldChange) %>% 
+  left_join(res_sign[,c("X", "padj")], by = join_by(labels == X))
+
+ggplot(data = coldf,
+       aes(x = log2FoldChange, y = reorder(labels, +log2FoldChange),
+           fill = log2FoldChange)) +
+  labs(y = NULL) +
+  scale_fill_gradient2(low = "#006D77", mid = "white", high = "#D04D1E", midpoint = 0) +
+  geom_col() +
+  theme_minimal()
+```
+
+```{r}
+ggsave(last_plot(), filename = here("plots", "barplot_AD-genes.png"),
+       height = 6, width = 10)
+```

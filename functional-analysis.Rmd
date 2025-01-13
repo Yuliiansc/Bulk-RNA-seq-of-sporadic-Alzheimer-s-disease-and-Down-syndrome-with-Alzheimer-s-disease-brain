@@ -1,0 +1,159 @@
+
+```{r}
+pacman::p_load("here", "tidyverse", "clusterProfiler", "stats", "dplyr",
+               "enrichplot", "europepmc", "org.Hs.eg.db")
+
+here::i_am("README.md")
+
+res <- read_csv(here("out", "DE_pfc_ADvsDS.csv")) %>% 
+  column_to_rownames("...1")
+annot <- read_csv(here("data", "gene_annotations_filtered.csv")) %>% 
+  column_to_rownames("hgnc_symbol") %>% 
+  dplyr::select(!c("...1", "transcript_biotype"))
+```
+
+```{r}
+# add ranking columns
+res <- res %>% 
+  mutate(ranking = (sign(log2FoldChange) * (-log10(pvalue)))) %>% 
+  arrange(desc(ranking))
+```
+
+```{r}
+# add a entrez id col
+res <- merge(res, annot, by = "row.names", all.x = TRUE)
+```
+
+```{r}
+res %>% janitor::get_dupes("entrezgene_id")
+```
+
+```{r}
+res <- res %>%
+  tidyr::drop_na() %>%
+  dplyr::distinct(entrezgene_id, .keep_all = TRUE)
+```
+
+## GSEA with ClusterProfiler (DOSE)
+https://yulab-smu.top/biomedical-knowledge-mining-book/index.html
+
+### GSEA
+
+
+```{r}
+genes_list <- res$ranking
+names(genes_list) <- res$entrezgene_id
+genes_list = sort(genes_list, decreasing = TRUE)
+
+genes_list_FC <- res$log2FoldChange
+names(genes_list_FC) <- res$entrezgene_id
+genes_list_FC = sort(genes_list_FC, decreasing = TRUE)
+```
+
+```{r}
+gseWP_res_025 <- gseWP(genes_list, organism = "Homo sapiens", by = "DOSE", nPerm = 1000, pvalueCutoff = 0.25)
+#gseWP_res_005 <- gseWP_res_025@result %>% filter(p.adjust < 0.05)
+```
+
+```{r}
+#gseKEGG(genes_list, organism = "mmu", by = "DOSE", nPerm = 1000)
+```
+
+### Visualizations
+
+```{r}
+#dotplot(gseWP_res_005, showCategory=30, x = "NES", color = "NES") + ggtitle("dotplot for GSEA")
+dotplot(gseWP_res_025, showCategory=30, x = "NES") + ggtitle("dotplot for GSEA")
+```
+# Barplot NES
+
+```{r}
+coldf <- gseWP_res_025@result
+
+ggplot(data = coldf,
+       aes(x = NES, y = reorder(Description, +NES),
+           fill = p.adjust)) +
+  labs(title = "Significant pathways by normalized enrichment score",
+       y = NULL) +
+  geom_col() +
+  theme_minimal()
+```
+```{r}
+ggsave(last_plot(), filename = here("plots", "NES-barplot.png"),
+       height = 7, width = 11)
+```
+
+# CNET plot
+
+TODO: where do the unlabeled data points come from
+```{r}
+gseWP_res_025_genename <- setReadable(gseWP_res_025, 'org.Hs.eg.db', 'ENTREZID')
+
+
+p1 <- cnetplot(gseWP_res_025_genename, color.params = list(foldChange = genes_list_FC))
+## categorySize can be scaled by 'pvalue' or 'geneNum'
+p2 <- cnetplot(gseWP_res_025_genename, categorySize="pvalue", 
+               color.params = list(foldChange = genes_list))
+
+p3 <- cnetplot(gseWP_res_025_genename, 
+               color.params = list(foldChange = genes_list), 
+               circular = TRUE, colorEdge = TRUE)
+cnetplot(gseWP_res_025_genename, color.params = list(foldChange = genes_list_FC))
+```
+
+```{r}
+cnetplot(gseWP_res_025_genename, color.params = list(foldChange = genes_list_FC),
+         circular = TRUE, colorEdge = TRUE)
+ggsave(last_plot(), filename = here("plots", "cnet-circular.png"),
+       height = 7, width = 12)
+```
+
+```{r}
+p1 <- cnetplot(gseWP_res_025_genename, node_label="category", 
+        cex_label_category = 1.2) 
+p2 <- cnetplot(gseWP_res_025_genename, node_label="gene", 
+        cex_label_gene = 0.8) 
+p3 <- cnetplot(gseWP_res_025_genename, node_label="all") 
+p4 <- cnetplot(gseWP_res_025_genename, node_label="none", 
+        color_category='firebrick', 
+        color_gene='steelblue') 
+cowplot::plot_grid(p1, p2, p3, p4, ncol=2, labels=LETTERS[1:4])
+
+p2
+```
+# Heatmap
+
+```{r}
+heatplot(gseWP_res_025_genename, foldChange=genes_list_FC, showCategory=6)
+```
+
+```{r}
+ggsave(last_plot(), filename = here("plots", "heatmap-pathways.png"),
+       height = 7, width = 12)
+```
+
+
+# Pathway clusterization
+
+```{r}
+tmp <- pairwise_termsim(gseWP_res_025_genename)
+treeplot(tmp)
+```
+```{r}
+ggsave(last_plot(), filename = here("plots", "treeplot.png"),
+       height = 7, width = 12)
+```
+
+
+# Terms plot
+
+```{r}
+terms <- gseWP_res_025_genename$Description[1:10]
+pmcplot(terms, 2013:2023)
+```
+
+```{r}
+ggsave(last_plot(), filename = here("plots", "termsplot.png"),
+       height = 7, width = 10)
+```
+

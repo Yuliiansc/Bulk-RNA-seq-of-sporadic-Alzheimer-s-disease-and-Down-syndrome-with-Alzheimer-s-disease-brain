@@ -1,0 +1,186 @@
+
+```{r}
+  pacman::p_load("here", "tidyverse", "DESeq2", "ashr", "janitor", "biomaRt",
+                 "PCAtools", "pheatmap")
+  here::i_am("README.md")
+```
+
+# Load the data
+
+Raw data accessed from [EBI BioStudies](https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-14179?query=E-MTAB-14179)
+
+Project title: Bulk RNA-seq of sporadic Alzheimer's disease and Down syndrome with Alzheimer's disease brain tissue for prefrontal cortex and cerebellum
+
+Project description: Cognitively normal brains are compared to sporadic AD and Down syndrome brains with AD for comparison of two different forms of Alzheimer's disease.
+
+```{r}
+meta <- read.delim(here("data", "E-MTAB-14179.sdrf.txt"), header=TRUE, sep="\t") %>%
+  filter(grepl("1.fq.gz$", Scan.Name)) %>% 
+  mutate(sample_id = gsub("_1.fq.gz$", "", Scan.Name)) %>% 
+  column_to_rownames(var = "sample_id") %>% 
+  dplyr::select(starts_with("Characteristics"))
+
+colnames(meta) <- gsub("^Characteristics\\.|\\.$", "", colnames(meta))
+
+#meta <- unite(meta, factor, c("organism_part", "disease"))
+
+# recode the disease characteristics to shorten and get rid of apostrophe
+meta <- meta %>%
+  rename_at('organism_part', ~'tissue') %>% 
+  mutate(disease = recode(disease,
+                          "Down syndrome with Alzheimer's disease" = "DS_AD",
+                          "Alzheimer's disease" = "AD",
+                          "normal" = "control")) %>% 
+  mutate(tissue = recode(tissue,
+                          "prefrontal cortex" = "pfc",
+                          "cerebellum" = "cereb")) %>%
+  dplyr::select(!c("developmental_stage", "organism")) %>% 
+  unite(factor, c("tissue", "disease"), remove = FALSE)
+```
+
+```{r}
+counts <- read.table(here("data", "DSAD-ApoE125_readcounts_fixed.txt"), 
+                 header = TRUE, 
+                 sep = "\t", 
+                 row.names = 1,
+                 check.names = FALSE,
+                stringsAsFactors = FALSE)
+```
+
+# biomaRt
+
+Converting genes from ENSEMBL to HMDB IDs using biomaRt.
+
+```{r}
+#ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+ensembl <- useEnsembl(biomart = "ensembl", 
+                   dataset = "hsapiens_gene_ensembl", 
+                   mirror = "asia")
+
+gene_annotations <- getBM(attributes = c('ensembl_gene_id', 'hgnc_symbol', 'entrezgene_id', 'transcript_biotype'),
+      filters = 'ensembl_gene_id',
+      values = rownames(counts), 
+      mart = ensembl)
+
+head(gene_annotations)
+```
+
+We have ~60k genes. Where do they come from? Let's find out:
+
+```{r}
+unique(gene_annotations$transcript_biotype)
+
+dim(gene_annotations %>% filter(transcript_biotype == "protein_coding"))
+```
+
+```{r}
+biotype_counts <- gene_annotations %>%
+  group_by(transcript_biotype) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+ggplot(biotype_counts, aes(x = reorder(transcript_biotype, -count), y = count, fill = transcript_biotype)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + 
+  labs(title = "Number of Transcripts per Biotype", x = "Transcript Biotype", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+OP: Now we see that most of them are protein-coding, still, non-coding (and pseudogenes, etc. are there).
+In principle, DESeq2 might benefit from retaining all genes, i.e., for better estimating the dataset's dispersion.
+However, some of them might not be biologically-relevant and their detection might be linked to other mechanisms than gene expression.
+
+Below is an example how to filter them - you should decide as a team which genes to filter out. Additionally, you will have to annotate them (codes -> gene names in the count matrix) -> figure out the best way to do that.
+
+## Filtering out non-protein-coding genes
+
+lbombini: I decided to filter protein-coding genes both with and without CDS defined, as these genes are guaranteed to be expressed.
+
+```{r}
+filtered_df <- gene_annotations %>%
+  filter(transcript_biotype %in% c("protein_coding")) %>% 
+  filter(!hgnc_symbol %in% hgnc_symbol[duplicated(hgnc_symbol)])
+
+counts <- counts[filtered_df$ensembl_gene_id,] %>% 
+  distinct()
+```
+
+```{r}
+# save for later recoding
+write.csv(filtered_df, here("data", "gene_annotations_filtered.csv"))
+```
+
+## Recoding the ensemble gene IDs to HGNC symbols
+
+```{r}
+rownames(counts) <- filtered_df$hgnc_symbol[match(rownames(counts), filtered_df$ensembl_gene_id)]
+```
+
+# Sorting and final checks
+
+Sorting the columns in `counts` matrix according to rownames in `meta`.
+
+```{r}
+counts <- counts[, rownames(meta)]
+```
+
+Before creating the `DESeqDataSet`, run the lines that test if the dataset is prepped properly.
+
+```{r}
+unique(meta$organism_part)
+unique(meta$disease)
+
+# checking if the meta fully corresponds to counts 
+all(rownames(meta) %in% colnames(counts))
+all(rownames(meta) == colnames(counts))
+```
+
+```{r}
+write.csv(counts, file = here("data", "DSAD-ApoE125_readcounts_fixed_renamed.csv"))
+write.csv(meta, file = here("data", "DSAD-ApoE125_metadata.csv"))
+```
+
+```{r}
+meta %>% group_by(tissue, disease) %>%  summarize(n_samples = n())
+```
+
+
+# PCA
+
+```{r}
+counts_norm <- counts %>% as.matrix() %>% varianceStabilizingTransformation(.)
+```
+
+
+```{r}
+pca <- pca(counts_norm, metadata=meta, removeVar=0.1)
+pca_disease <- biplot(pca, colby="disease", legendPosition = "right", lab=NULL)
+pca_tissue <- biplot(pca, colby="tissue", legendPosition = "right", lab=NULL)
+pca_factor <- biplot(pca, colby="factor", legendPosition = "right", lab=NULL)
+
+pca_disease
+pca_tissue
+pca_factor
+```
+
+```{r}
+ggsave(pca_disease, filename = here("plots", "pca-by-disease.png"))
+ggsave(pca_tissue, filename = here("plots", "pca-by-tissue.png"))
+ggsave(pca_factor, filename = here("plots", "pca-by-factor.png"))
+```
+
+# Heatmap
+
+```{r}
+corr_matrix <- cor(counts)
+
+p <- pheatmap::pheatmap(corr_matrix, annotation=meta[, c("disease", "tissue")],
+                   show_colnames = FALSE, show_rownames = FALSE,
+                   fontsize = 15, legend_width = 13, width = 12, height = 12,
+                   color=rev(viridis::viridis(100)))
+p <- gridExtra::grid.arrange(p$gtable, vp=grid::viewport(width=0.9, height=1))
+```
+
+```{r}
+ggsave(p, filename = here("plots", "heatmap-samples.png"))
+```
